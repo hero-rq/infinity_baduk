@@ -1,1 +1,2 @@
-# infinity_baduk
+Do you like baduk ? 
+then dance !
