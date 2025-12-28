@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Baduk (Go) 19×19 — Dark Study Board</title>
+  <style>
+    :root{
+      --bg:    #0b0f14;
+      --panel: rgba(255,255,255,0.04);
+      --text:  rgba(255,255,255,0.88);
+      --muted: rgba(255,255,255,0.60);
+      --stroke:rgba(255,255,255,0.10);
+
+      /* Default board theme (NOT warm) */
+      --board:#6f7d86;   /* cool slate */
+      --grid: #14181d;   /* deep grid lines */
+      --hoshi:#0d1116;
+
+      /* Ko marker (blue style) */
+      --ko:   #4da3ff;
+    }
+
+    *{ box-sizing:border-box; }
+    html,body{ height:100%; }
+    body{
+      margin:0;
+      background:var(--bg);
+      color:var(--text);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      overflow:hidden;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+    }
+
+    .wrap{
+      width: min(98vw, 1100px);
+      height: min(98vh, 1100px);
+      display:flex;
+      flex-direction:column;
+      gap:10px;
+    }
+
+    .top{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      padding:8px 10px;
+      border:1px solid var(--stroke);
+      border-radius:14px;
+      background:var(--panel);
+      backdrop-filter: blur(8px);
+    }
+    .left{
+      display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+      font-size:13px;
+    }
+    .pill{
+      padding:6px 10px;
+      border-radius:999px;
+      border:1px solid var(--stroke);
+      background:rgba(0,0,0,0.20);
+      color:var(--text);
+      font-size:12px;
+      white-space:nowrap;
+    }
+    .pill.muted{ color:var(--muted); }
+
+    .right{
+      display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end;
+    }
+    select, input[type="color"], button{
+      border:1px solid var(--stroke);
+      background:rgba(0,0,0,0.25);
+      color:var(--text);
+      border-radius:12px;
+      padding:6px 10px;
+      font-size:12px;
+      outline:none;
+    }
+    button{ cursor:pointer; }
+    button:active{ transform:translateY(1px); }
+    #boardCustom, #gridCustom{ display:none; padding:0; width:40px; height:32px; }
+
+    .board-area{
+      flex:1;
+      min-height:0;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+    }
+    canvas{
+      width:auto;
+      height:auto;
+      max-width:100%;
+      max-height:100%;
+      aspect-ratio:1/1;
+      background:var(--board);
+      border-radius:18px;
+      border:1px solid var(--stroke);
+      outline:none;
+      box-shadow: 0 18px 60px rgba(0,0,0,0.55);
+    }
+
+    /* Zen mode (bar hidden) */
+    .hide-top .top{ display:none; }
+    .hide-top .wrap{ gap:0; }
+    .hide-top .wrap{ gap:0; }
+    .hide-top .board-area{ padding-top:0; }
+  </style>
+</head>
+<body>
+  <!-- Default is HIDE bar mode -->
+  <div class="wrap hide-top" id="wrap">
+    <div class="top" id="topBar">
+      <div class="left">
+        <span class="pill" id="movePill">Move: 0/0</span>
+        <span class="pill" id="turnPill">Next: Black</span>
+        <span class="pill muted" id="koPill">Ko: -</span>
+        <span class="pill muted" id="hintPill">Keys: ← undo • → redo • R reset • H toggle bar</span>
+        <span class="pill" id="msgPill" style="display:none;"></span>
+      </div>
+      <div class="right">
+        <select id="boardSelect" title="Board theme">
+          <option value="#6f7d86" selected>Slate (default)</option>
+          <option value="#9aa0a6">Paper Gray</option>
+          <option value="#596a5e">Deep Green</option>
+          <option value="#7b8794">Blue Steel</option>
+          <option value="#4f5b66">Charcoal</option>
+          <option value="custom">Custom…</option>
+        </select>
+        <input id="boardCustom" type="color" value="#6f7d86" title="Custom board color">
+
+        <select id="gridSelect" title="Grid color">
+          <option value="#14181d" selected>Deep</option>
+          <option value="#0d1116">Darker</option>
+          <option value="#2b3138">Soft</option>
+          <option value="custom">Custom…</option>
+        </select>
+        <input id="gridCustom" type="color" value="#14181d" title="Custom grid color">
+
+        <button id="resetBtn" title="Reset (R)">Reset</button>
+      </div>
+    </div>
+
+    <div class="board-area">
+      <canvas id="board" width="980" height="980" tabindex="0" aria-label="Go board"></canvas>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const N = 19;
+  const EMPTY = 0, BLACK = 1, WHITE = 2;
+
+  const canvas = document.getElementById('board');
+  const ctx = canvas.getContext('2d');
+
+  const wrap = document.getElementById('wrap');
+  const movePill = document.getElementById('movePill');
+  const turnPill = document.getElementById('turnPill');
+  const koPill = document.getElementById('koPill');
+  const msgPill = document.getElementById('msgPill');
+
+  const boardSelect = document.getElementById('boardSelect');
+  const boardCustom = document.getElementById('boardCustom');
+  const gridSelect  = document.getElementById('gridSelect');
+  const gridCustom  = document.getElementById('gridCustom');
+  const resetBtn    = document.getElementById('resetBtn');
+
+  const STONE_RADIUS_FACTOR = 0.475;
+
+  const size = canvas.width;  // internal resolution
+  const margin = 48;
+  const cell = (size - 2 * margin) / (N - 1);
+  const hoshi = [3, 9, 15];
+
+  const other = p => (p === BLACK ? WHITE : BLACK);
+
+  function cssVar(name){
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+  function setRootVar(name, val){
+    document.documentElement.style.setProperty(name, val);
+  }
+
+  function inBounds(r,c){ return r>=0 && r<N && c>=0 && c<N; }
+  function neighbors(r,c){
+    const out=[];
+    if (r>0) out.push([r-1,c]);
+    if (r<N-1) out.push([r+1,c]);
+    if (c>0) out.push([r,c-1]);
+    if (c<N-1) out.push([r,c+1]);
+    return out;
+  }
+
+  function cloneBoard(board){ return board.map(row => row.slice()); }
+  function emptyBoard(){ return Array.from({length:N}, () => Array(N).fill(EMPTY)); }
+
+  function boardsEqual(a, b){
+    if (!a || !b) return false;
+    for (let r=0;r<N;r++){
+      for (let c=0;c<N;c++){
+        if (a[r][c] !== b[r][c]) return false;
+      }
+    }
+    return true;
+  }
+
+  // Position = { board, nextPlayer, ko }
+  // ko is a "forbidden recapture point" ONLY when immediate repetition would occur.
+  let history = [{ board: emptyBoard(), nextPlayer: BLACK, ko: null }];
+  let idx = 0;
+  const current = () => history[idx];
+
+  function groupAndLiberties(board, sr, sc){
+    const color = board[sr][sc];
+    const stack=[[sr,sc]];
+    const seen=new Set([sr+","+sc]);
+    const group=[];
+    const libs=new Set();
+
+    while(stack.length){
+      const [r,c]=stack.pop();
+      group.push([r,c]);
+      for (const [rr,cc] of neighbors(r,c)){
+        const v=board[rr][cc];
+        if (v===EMPTY) libs.add(rr+","+cc);
+        else if (v===color){
+          const key=rr+","+cc;
+          if (!seen.has(key)){
+            seen.add(key);
+            stack.push([rr,cc]);
+          }
+        }
+      }
+    }
+    return { group, libs };
+  }
+
+  // Core move application without "ko repetition" check,
+  // used for simulating the opponent recapture to detect true ko.
+  function applyMoveCore(board, nextPlayer, r, c){
+    const b = cloneBoard(board);
+    if (b[r][c] !== EMPTY) return null;
+
+    const player = nextPlayer;
+    const opp = other(player);
+
+    b[r][c] = player;
+
+    const captured = [];
+    for (const [rr,cc] of neighbors(r,c)){
+      if (b[rr][cc] === opp){
+        const { group, libs } = groupAndLiberties(b, rr, cc);
+        if (libs.size === 0){
+          for (const stone of group) captured.push(stone);
+        }
+      }
+    }
+    if (captured.length){
+      for (const [pr,pc] of captured) b[pr][pc] = EMPTY;
+    }
+
+    // suicide check
+    const { libs } = groupAndLiberties(b, r, c);
+    if (libs.size === 0) return null;
+
+    return { board: b, captured };
+  }
+
+  // Full rules move: includes "no immediate repetition" ko rule.
+  // prevBoard = the board position one move ago (to prevent immediate repetition).
+  function applyMove(pos, r, c, prevBoard){
+    // Use the repetition rule, NOT "single-stone lockout"
+    const core = applyMoveCore(pos.board, pos.nextPlayer, r, c);
+    if (!core) return null;
+
+    const newBoard = core.board;
+    const captured = core.captured;
+
+    // KO rule (as you described):
+    // A move is illegal only if it recreates the previous board position (immediate repetition).
+    // This naturally allows snapback when the recapture changes the board (e.g., captures multiple).
+    if (prevBoard && boardsEqual(newBoard, prevBoard)){
+      return null;
+    }
+
+    // Detect a "true ko forbidden point" for UI:
+    // Only mark a ko point if opponent recapture at the captured point would recreate current pos.board.
+    let newKo = null;
+    if (captured.length === 1){
+      const [capR, capC] = captured[0];
+
+      // simulate opponent recapture on the new board
+      const sim = applyMoveCore(newBoard, other(pos.nextPlayer), capR, capC);
+      if (sim && boardsEqual(sim.board, pos.board)){
+        newKo = [capR, capC];
+      }
+      // If sim doesn't recreate the board (e.g. snapback capturing multiple),
+      // then it's NOT a ko-forbidden point.
+    }
+
+    return {
+      board: newBoard,
+      nextPlayer: other(pos.nextPlayer),
+      ko: newKo
+    };
+  }
+
+  function showMsg(text){
+    msgPill.textContent=text;
+    msgPill.style.display="inline-block";
+    setTimeout(()=>{ msgPill.style.display="none"; }, 900);
+  }
+
+  function updateStatus(){
+    const pos=current();
+    movePill.textContent = `Move: ${idx}/${history.length-1}`;
+    turnPill.textContent = `Next: ${pos.nextPlayer===BLACK ? "Black" : "White"}`;
+    koPill.textContent = `Ko: ${pos.ko ? `(${pos.ko[0]+1}, ${pos.ko[1]+1})` : "-"}`;
+  }
+
+  function drawGrid(){
+    ctx.clearRect(0,0,size,size);
+
+    ctx.lineWidth = 1.08;
+    ctx.strokeStyle = cssVar('--grid') || "#14181d";
+
+    for (let i=0;i<N;i++){
+      const x = margin + i*cell;
+      const y0=margin, y1=margin+(N-1)*cell;
+      ctx.beginPath(); ctx.moveTo(x,y0); ctx.lineTo(x,y1); ctx.stroke();
+    }
+    for (let i=0;i<N;i++){
+      const y = margin + i*cell;
+      const x0=margin, x1=margin+(N-1)*cell;
+      ctx.beginPath(); ctx.moveTo(x0,y); ctx.lineTo(x1,y); ctx.stroke();
+    }
+
+    ctx.fillStyle = cssVar('--hoshi') || "#0d1116";
+    for (const r of hoshi){
+      for (const c of hoshi){
+        const x=margin+c*cell, y=margin+r*cell;
+        ctx.beginPath(); ctx.arc(x,y,4.2,0,Math.PI*2); ctx.fill();
+      }
+    }
+  }
+
+  function drawStone(x,y,isBlack){
+    const r = cell * STONE_RADIUS_FACTOR;
+
+    ctx.beginPath();
+    ctx.fillStyle = "rgba(0,0,0,0.30)";
+    ctx.arc(x+2,y+2,r,0,Math.PI*2);
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.fillStyle = isBlack ? "black" : "white";
+    ctx.arc(x,y,r,0,Math.PI*2);
+    ctx.fill();
+
+    if (!isBlack){
+      ctx.lineWidth = 1.25;
+      ctx.strokeStyle = "rgba(0,0,0,0.65)";
+      ctx.stroke();
+    }
+  }
+
+  function redraw(){
+    drawGrid();
+    const pos=current();
+
+    for (let r=0;r<N;r++){
+      for (let c=0;c<N;c++){
+        const v=pos.board[r][c];
+        if (v===EMPTY) continue;
+        const x=margin+c*cell, y=margin+r*cell;
+        drawStone(x,y, v===BLACK);
+      }
+    }
+
+    // ko marker (blue)
+    if (pos.ko){
+      const [r,c]=pos.ko;
+      const x=margin+c*cell, y=margin+r*cell;
+      ctx.beginPath();
+      ctx.lineWidth=2.8;
+      ctx.strokeStyle = cssVar('--ko') || "#4da3ff";
+      ctx.arc(x,y, cell*0.14, 0, Math.PI*2);
+      ctx.stroke();
+    }
+
+    updateStatus();
+  }
+
+  function nearestIntersection(px,py){
+    const gx=(px-margin)/cell;
+    const gy=(py-margin)/cell;
+    const c=Math.round(gx);
+    const r=Math.round(gy);
+    if (!inBounds(r,c)) return null;
+
+    const ix=margin+c*cell;
+    const iy=margin+r*cell;
+
+    const dist2=(px-ix)*(px-ix) + (py-iy)*(py-iy);
+    const thresh2=(cell*0.35)*(cell*0.35);
+    if (dist2<=thresh2) return [r,c];
+    return null;
+  }
+
+  function reset(){
+    history=[{ board: emptyBoard(), nextPlayer: BLACK, ko: null }];
+    idx=0;
+    redraw();
+  }
+
+  canvas.addEventListener('click', (e)=>{
+    const rect=canvas.getBoundingClientRect();
+    const scaleX=canvas.width/rect.width;
+    const scaleY=canvas.height/rect.height;
+    const x=(e.clientX-rect.left)*scaleX;
+    const y=(e.clientY-rect.top)*scaleY;
+
+    const rc=nearestIntersection(x,y);
+    if (!rc) return;
+
+    const [r,c]=rc;
+    const pos=current();
+
+    // prevBoard is the board one move ago (for ko repetition check)
+    const prevBoard = (idx >= 1) ? history[idx-1].board : null;
+
+    const next=applyMove(pos,r,c,prevBoard);
+
+    if (!next){
+      showMsg("Illegal move (occupied / suicide / ko repetition).");
+      return;
+    }
+
+    if (idx !== history.length-1){
+      history = history.slice(0, idx+1);
+    }
+    history.push(next);
+    idx++;
+    redraw();
+    canvas.focus();
+  });
+
+  resetBtn.addEventListener('click', reset);
+
+  window.addEventListener('keydown', (e)=>{
+    if (e.key==="ArrowLeft" || e.key==="ArrowRight") e.preventDefault();
+
+    if (e.key==="ArrowLeft"){
+      if (idx>0){ idx--; redraw(); }
+    } else if (e.key==="ArrowRight"){
+      if (idx+1<history.length){ idx++; redraw(); }
+    } else if (e.key==="r" || e.key==="R"){
+      reset();
+    } else if (e.key==="h" || e.key==="H"){
+      // Default is hidden; H shows it, H again hides it
+      wrap.classList.toggle("hide-top");
+      canvas.focus();
+    }
+  }, { passive:false });
+
+  // Theme controls
+  boardSelect.addEventListener('change', ()=>{
+    if (boardSelect.value === "custom"){
+      boardCustom.style.display = "inline-block";
+      boardCustom.value = cssVar('--board') || "#6f7d86";
+    } else {
+      boardCustom.style.display = "none";
+      setRootVar('--board', boardSelect.value);
+    }
+  });
+  boardCustom.addEventListener('input', ()=> setRootVar('--board', boardCustom.value));
+
+  gridSelect.addEventListener('change', ()=>{
+    if (gridSelect.value === "custom"){
+      gridCustom.style.display = "inline-block";
+      gridCustom.value = cssVar('--grid') || "#14181d";
+    } else {
+      gridCustom.style.display = "none";
+      setRootVar('--grid', gridSelect.value);
+    }
+    redraw();
+  });
+  gridCustom.addEventListener('input', ()=>{
+    setRootVar('--grid', gridCustom.value);
+    redraw();
+  });
+
+  // Start
+  setRootVar('--board', boardSelect.value);
+  setRootVar('--grid', gridSelect.value);
+  redraw();
+  canvas.focus();
+})();
+</script>
+</body>
+</html>
